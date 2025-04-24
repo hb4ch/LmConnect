@@ -9,10 +9,24 @@ function createWindow() {
     width: 800,
     height: 600,
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
       preload: path.join(__dirname, 'preload.js')
     }
+  });
+
+  // Set CSP headers to allow API requests
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self' 'unsafe-inline' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.deepseek.com",
+          "connect-src 'self' https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.deepseek.com"
+        ]
+      }
+    });
   });
 
   mainWindow.loadFile('index.html');
@@ -65,9 +79,20 @@ ipcMain.handle('get-api-key', (event, provider) => {
   });
 });
 
-// Save API key
-ipcMain.on('save-api-key', (event, provider, key) => {
-  db.run('INSERT OR REPLACE INTO api_keys (provider, api_key) VALUES (?, ?)', [provider, key]);
+// Save API key and base URL
+ipcMain.on('save-api-key', (event, provider, key, apiBase) => {
+  db.run('INSERT OR REPLACE INTO api_keys (provider, api_key, api_base) VALUES (?, ?, ?)', 
+    [provider, key, apiBase || null]);
+});
+
+// Get API base URL
+ipcMain.handle('get-api-base', (event, provider) => {
+  return new Promise((resolve, reject) => {
+    db.get('SELECT api_base FROM api_keys WHERE provider = ?', [provider], (err, row) => {
+      if (err) return reject(err);
+      resolve(row?.api_base || null);
+    });
+  });
 });
 
 // Log chat message

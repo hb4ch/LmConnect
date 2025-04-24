@@ -21,13 +21,17 @@
     <div class="sidebar">
       <h3>API Provider</h3>
       <select id="api-select">
+        <option value="deepseek" selected>DeepSeek</option>
         <option value="openai">OpenAI</option>
         <option value="anthropic">Claude</option>
         <option value="google">Google</option>
-        <option value="deepseek">DeepSeek</option>
+        <option value="custom">Custom (OpenAI-compatible)</option>
       </select>
       <div class="api-key-input">
         <input type="text" id="api-key-input" placeholder="Enter API Key">
+        <div id="custom-api-base-container" style="display: none; margin-top: 10px;">
+          <input type="text" id="custom-api-base" placeholder="Enter API Base URL (e.g. https://api.example.com/v1)">
+        </div>
         <button onclick="saveAPIKey()">Save Key</button>
       </div>
     </div>
@@ -42,13 +46,56 @@
     const chatLog = document.getElementById('chat-log');
     const userInputElement = document.getElementById('user-input');
 
+    // Toggle custom API base URL field visibility and update API key display
+    document.getElementById('api-select').addEventListener('change', async function() {
+      const customApiContainer = document.getElementById('custom-api-base-container');
+      customApiContainer.style.display = this.value === 'custom' ? 'block' : 'none';
+      
+      // Update API key display for new provider
+      const apiKey = await window.electronAPI.getAPIKey(this.value);
+      const keyInput = document.getElementById('api-key-input');
+      if (apiKey) {
+        keyInput.value = apiKey.substring(0, 4) + '*'.repeat(Math.max(0, apiKey.length - 4));
+      } else {
+        keyInput.value = '';
+      }
+    });
+
+    // Toggle API key masking on focus/blur
+    document.getElementById('api-key-input').addEventListener('focus', async function() {
+      const provider = document.getElementById('api-select').value;
+      const apiKey = await window.electronAPI.getAPIKey(provider);
+      if (apiKey && this.value.includes('*')) {
+        this.value = apiKey;
+      }
+    });
+
+    document.getElementById('api-key-input').addEventListener('blur', async function() {
+      const provider = document.getElementById('api-select').value;
+      const apiKey = await window.electronAPI.getAPIKey(provider);
+      if (apiKey && this.value !== apiKey) {
+        // Save if changed
+        await window.electronAPI.saveAPIKey(provider, this.value);
+        this.value = apiKey.substring(0, 4) + '*'.repeat(Math.max(0, apiKey.length - 4));
+      } else if (apiKey) {
+        // Just mask if unchanged
+        this.value = apiKey.substring(0, 4) + '*'.repeat(Math.max(0, apiKey.length - 4));
+      }
+    });
+
     // Save API Key function
     async function saveAPIKey() {
       const provider = document.getElementById('api-select').value;
       const key = document.getElementById('api-key-input').value;
+      const apiBase = provider === 'custom' 
+        ? document.getElementById('custom-api-base').value
+        : null;
+      
       if (!provider || !key) return alert('Provider and key are required');
-      await window.electronAPI.saveAPIKey(provider, key);
-      alert('API Key saved!');
+      if (provider === 'custom' && !apiBase) return alert('API Base URL is required for custom provider');
+      
+      await window.electronAPI.saveAPIKey(provider, key, apiBase);
+      alert('API settings saved!');
     }
 
     // Send message function
@@ -69,13 +116,31 @@
       const apiKey = await window.electronAPI.getAPIKey(provider);
       if (!apiKey) return alert(`No API key saved for ${provider}`);
 
-      // Simulate API call (replace with actual API logic later)
-      const botResponse = await simulateAPIResponse(message, provider);
-      displayBotMessage(botResponse);
+      // Call API and display response
+      try {
+        console.log('Sending message to API:', {provider, message});
+        const botResponse = await sendAPIRequest(provider, apiKey, message);
+        console.log('Received API response:', botResponse);
+        displayBotMessage(botResponse);
+        // Log to database
+        await window.electronAPI.logChatMessage(message, botResponse, provider);
+      } catch (err) {
+        console.error('API Error:', err);
+        displayBotMessage(`Error: ${err.message}`);
+      }
     }
 
     // Send API Request function
     async function sendAPIRequest(provider, apiKey, message) {
+      // Get custom API base if available
+      const apiBase = provider === 'custom' 
+        ? await window.electronAPI.getAPIBase(provider)
+        : null;
+      if (!navigator.onLine) {
+        throw new Error('No internet connection');
+      }
+      
+      console.log(`Sending request to ${provider} with key length ${apiKey?.length}`);
       try {
         if (provider === 'openai') {
           const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -91,6 +156,9 @@
             })
           });
           const data = await response.json();
+          if (!data.choices?.[0]?.message?.content) {
+            throw new Error('Invalid response format from OpenAI');
+          }
           return data.choices[0].message.content;
         } else if (provider === 'anthropic') {
           const response = await fetch('https://api.anthropic.com/v1/complete', {
@@ -107,6 +175,9 @@
             })
           });
           const data = await response.json();
+          if (!data.completion) {
+            throw new Error('Invalid response format from Claude');
+          }
           return data.completion.trim();
         } else if (provider === 'google') {
           const model = 'gemini-pro';
@@ -128,56 +199,33 @@
             })
           });
           const data = await response.json();
+          if (!data.results?.[0]?.replies?.[0]?.content?.parts?.[0]) {
+            throw new Error('Invalid response format from Google');
+          }
           return data.results[0].replies[0].content.parts[0];
         } else if (provider === 'deepseek') {
-          const response = await fetch('https://api.deepseek.cn/api/v1/chat', {
+          const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${apiKey}`,
               'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-              model: '6b',
+              model: 'deepseek-chat',
               messages: [{ role: 'user', content: message }],
               temperature: 0.7
             })
           });
           const data = await response.json();
+          if (!data.choices?.[0]?.message?.content) {
+            throw new Error('Invalid response format from DeepSeek');
+          }
           return data.choices[0].message.content;
         }
       } catch (error) {
         console.error(`API Error for ${provider}:`, error);
-        return `Error: ${error.message}`;
+        throw error;
       }
-    }
-
-    // Send message function (updated)
-    async function sendMessage() {
-      const message = userInputElement.value.trim();
-      if (!message) return;
-
-      // Add user message to UI
-      const userMsg = document.createElement('div');
-      userMsg.className = 'message user';
-      userMsg.textContent = 'You: ' + message;
-      chatLog.appendChild(userMsg);
-      userInputElement.value = '';
-      chatLog.scrollTop = chatLog.scrollHeight;
-
-      // Get selected provider and key
-      const provider = document.getElementById('api-select').value;
-      const apiKey = await window.electronAPI.getAPIKey(provider);
-      if (!apiKey) return alert(`No API key saved for ${provider}`);
-
-    // Call API and display response
-    try {
-      const botResponse = await sendAPIRequest(provider, apiKey, message);
-      displayBotMessage(botResponse);
-      // Log to database
-      await window.electronAPI.logChatMessage(message, botResponse, provider);
-    } catch (err) {
-      displayBotMessage(`Error: ${err.message}`);
-    }
     }
 
     function displayBotMessage(response) {
@@ -188,9 +236,28 @@
       chatLog.scrollTop = chatLog.scrollHeight;
     }
 
-    // Load chat history on startup
+    // Load saved settings and chat history on startup
     (async () => {
       try {
+        // Load selected provider
+        const provider = document.getElementById('api-select').value;
+        
+        // Load and mask API key if exists
+        const apiKey = await window.electronAPI.getAPIKey(provider);
+        if (apiKey) {
+          document.getElementById('api-key-input').value = 
+            apiKey.substring(0, 4) + '*'.repeat(Math.max(0, apiKey.length - 4));
+        }
+
+        // Load API base URL if exists
+        if (provider === 'custom') {
+          const apiBase = await window.electronAPI.getAPIBase(provider);
+          if (apiBase) {
+            document.getElementById('custom-api-base').value = apiBase;
+          }
+        }
+
+        // Load chat history
         const history = await window.electronAPI.getChatHistory();
         history.forEach(entry => {
           const userMsg = document.createElement('div');
