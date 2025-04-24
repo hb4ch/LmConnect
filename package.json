@@ -1,0 +1,32 @@
+{
+  "name": "lmconnect",
+  "version": "1.0.0",
+  "description": "Cross-platform LLM chat application",
+  "author": "Your Name <your.email@example.com>",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "sqlite3": "^6.0.4"
+  },
+  "devDependencies": {
+    "electron": "^27.0.0",
+    "electron-builder": "^24.9.2"
+  },
+  "build": {
+    "appId": "com.yourcompany.lmconnect",
+    "productName": "LMConnect",
+    "directories": {
+      "output": "build"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
