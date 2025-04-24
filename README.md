@@ -21,7 +21,7 @@ A desktop application that provides a unified interface for interacting with mul
 ### Steps
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/LMConnect.git
+   git clone https://github.com/hb4ch/LMConnect.git
    ```
 2. Install dependencies:
    ```bash
