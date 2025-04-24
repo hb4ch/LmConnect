@@ -3,6 +3,14 @@
 <head>
   <title>LMConnect</title>
   <style>
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    .typing-indicator {
+      display: inline-block;
+      animation: blink 1.5s infinite;
+    }
     body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
     .container { display: flex; height: 100vh; }
     .sidebar { width: 200px; padding: 20px; background: #f8f9fa; border-right: 1px solid #dee2e6; }
@@ -103,13 +111,24 @@
       const message = userInputElement.value.trim();
       if (!message) return;
 
+      // Disable input during request
+      userInputElement.disabled = true;
+      document.getElementById('send-btn').disabled = true;
+      
+      // Show loading indicator
+      const loadingIndicator = document.createElement('div');
+      loadingIndicator.id = 'loading-indicator';
+      loadingIndicator.className = 'message bot loading';
+      loadingIndicator.innerHTML = 'Bot: <span class="typing-indicator">Thinking...</span>';
+      chatLog.appendChild(loadingIndicator);
+      chatLog.scrollTop = chatLog.scrollHeight;
+
       // Add user message to UI
       const userMsg = document.createElement('div');
       userMsg.className = 'message user';
       userMsg.textContent = 'You: ' + message;
       chatLog.appendChild(userMsg);
       userInputElement.value = '';
-      chatLog.scrollTop = chatLog.scrollHeight;
 
       // Get selected provider and key
       const provider = document.getElementById('api-select').value;
@@ -121,13 +140,77 @@
         console.log('Sending message to API:', {provider, message});
         const botResponse = await sendAPIRequest(provider, apiKey, message);
         console.log('Received API response:', botResponse);
-        displayBotMessage(botResponse);
         // Log to database
         await window.electronAPI.logChatMessage(message, botResponse, provider);
       } catch (err) {
         console.error('API Error:', err);
         displayBotMessage(`Error: ${err.message}`);
+      } finally {
+        // Re-enable input and remove loading indicator
+        userInputElement.disabled = false;
+        document.getElementById('send-btn').disabled = false;
+        const indicator = document.getElementById('loading-indicator');
+        if (indicator) indicator.remove();
       }
+    }
+
+    // Handle streaming response
+    async function handleStreamingResponse(response) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let result = '';
+      
+      // Create initial streaming message
+      currentStreamingMessageId = 'msg-' + Date.now();
+      const botMsg = document.createElement('div');
+      botMsg.id = currentStreamingMessageId;
+      botMsg.className = 'message bot streaming';
+      chatLog.appendChild(botMsg);
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        
+        buffer += decoder.decode(value, { stream: true });
+        
+        // Process complete messages
+        while (buffer.includes('\n')) {
+          const messageEnd = buffer.indexOf('\n');
+          const message = buffer.substring(0, messageEnd).trim();
+          buffer = buffer.substring(messageEnd + 1);
+          
+          if (!message) continue;
+          
+          // Handle both OpenAI-style (data: {...}) and DeepSeek-style ({...}) formats
+          const jsonStart = message.startsWith('data: ') ? 6 : 0;
+          const content = message.substring(jsonStart);
+          
+          if (content === '[DONE]') return result;
+          
+          try {
+            const parsed = JSON.parse(content);
+            // Handle both OpenAI and DeepSeek response formats
+            const token = parsed.choices?.[0]?.delta?.content || 
+                         parsed.choices?.[0]?.message?.content || 
+                         parsed.choices?.[0]?.text || 
+                         '';
+            result += token;
+            // Update streaming message
+            const streamingMsg = document.getElementById(currentStreamingMessageId);
+            if (streamingMsg) {
+              streamingMsg.innerHTML = `Bot: ${result}<span class="typing-indicator">...</span>`;
+              chatLog.scrollTo({
+                top: chatLog.scrollHeight,
+                behavior: 'smooth'
+              });
+            }
+          } catch (err) {
+            console.error('Error parsing stream message:', err);
+          }
+        }
+      }
+      return result;
     }
 
     // Send API Request function
@@ -142,8 +225,12 @@
       
       console.log(`Sending request to ${provider} with key length ${apiKey?.length}`);
       try {
-        if (provider === 'openai') {
-          const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        if (provider === 'openai' || provider === 'custom') {
+          const endpoint = provider === 'custom' 
+            ? `${apiBase}/chat/completions`
+            : 'https://api.openai.com/v1/chat/completions';
+            
+          const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -152,14 +239,17 @@
             body: JSON.stringify({
               model: 'gpt-3.5-turbo',
               messages: [{ role: 'user', content: message }],
-              max_tokens: 150
+              max_tokens: 150,
+              stream: true
             })
           });
-          const data = await response.json();
-          if (!data.choices?.[0]?.message?.content) {
-            throw new Error('Invalid response format from OpenAI');
+          
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error?.message || 'API request failed');
           }
-          return data.choices[0].message.content;
+          
+          return await handleStreamingResponse(response);
         } else if (provider === 'anthropic') {
           const response = await fetch('https://api.anthropic.com/v1/complete', {
             method: 'POST',
@@ -213,14 +303,17 @@
             body: JSON.stringify({
               model: 'deepseek-chat',
               messages: [{ role: 'user', content: message }],
-              temperature: 0.7
+              temperature: 0.7,
+              stream: true
             })
           });
-          const data = await response.json();
-          if (!data.choices?.[0]?.message?.content) {
-            throw new Error('Invalid response format from DeepSeek');
+          
+          if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error?.message || 'DeepSeek API request failed');
           }
-          return data.choices[0].message.content;
+          
+          return await handleStreamingResponse(response);
         }
       } catch (error) {
         console.error(`API Error for ${provider}:`, error);
@@ -228,12 +321,36 @@
       }
     }
 
-    function displayBotMessage(response) {
-      const botMsg = document.createElement('div');
-      botMsg.className = 'message bot';
-      botMsg.textContent = `Bot: ${response}`;
-      chatLog.appendChild(botMsg);
-      chatLog.scrollTop = chatLog.scrollHeight;
+    let currentStreamingMessageId = null;
+
+    function displayBotMessage(response, isStreaming = false) {
+      let botMsg;
+      
+      if (isStreaming) {
+        // For streaming, either find existing streaming message or create new one
+        botMsg = document.getElementById(currentStreamingMessageId);
+        if (!botMsg) {
+          currentStreamingMessageId = 'msg-' + Date.now();
+          botMsg = document.createElement('div');
+          botMsg.id = currentStreamingMessageId;
+          botMsg.className = 'message bot streaming';
+          chatLog.appendChild(botMsg);
+        }
+        botMsg.innerHTML = `Bot: ${response}<span class="typing-indicator">...</span>`;
+      } else {
+        // For non-streaming, always create new message
+        currentStreamingMessageId = null;
+        botMsg = document.createElement('div');
+        botMsg.className = 'message bot';
+        botMsg.textContent = `Bot: ${response}`;
+        chatLog.appendChild(botMsg);
+      }
+      
+      // Smooth scroll to bottom
+      chatLog.scrollTo({
+        top: chatLog.scrollHeight,
+        behavior: 'smooth'
+      });
     }
 
     // Load saved settings and chat history on startup
