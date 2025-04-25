@@ -41,7 +41,7 @@ function initDatabase() {
     console.log('Connected to the database.');
 
     // Create tables if they don't exist
-    db.run('CREATE TABLE IF NOT EXISTS api_keys (provider TEXT PRIMARY KEY, api_key TEXT)');
+    db.run('CREATE TABLE IF NOT EXISTS api_keys (provider TEXT PRIMARY KEY, api_key TEXT, api_base TEXT)');
     db.run('CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_message TEXT, bot_response TEXT, provider TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)');
   });
 }
@@ -58,11 +58,12 @@ app.on('ready', () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
-    if (db) {
-      db.close(() => {
-        console.log('Database connection closed.');
-      });
-    }
+  }
+  // Close database connection on all platforms
+  if (db) {
+    db.close(() => {
+      console.log('Database connection closed.');
+    });
   }
 });
 
@@ -82,7 +83,12 @@ ipcMain.handle('get-api-key', (event, provider) => {
 // Save API key and base URL
 ipcMain.on('save-api-key', (event, provider, key, apiBase) => {
   db.run('INSERT OR REPLACE INTO api_keys (provider, api_key, api_base) VALUES (?, ?, ?)', 
-    [provider, key, apiBase || null]);
+    [provider, key, apiBase || null], (err) => {
+      if (err) {
+        console.error('Failed to save API key:', err);
+        event.sender.send('save-api-key-error', err.message);
+      }
+    });
 });
 
 // Get API base URL

@@ -1,8 +1,14 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  saveAPIKey: (provider, key) => {
-    ipcRenderer.send('save-api-key', provider, key);
+  saveAPIKey: (provider, key, apiBase) => {
+    return new Promise((resolve, reject) => {
+      ipcRenderer.once('save-api-key-error', (event, error) => {
+        reject(new Error(error));
+      });
+      ipcRenderer.send('save-api-key', provider, key, apiBase);
+      resolve();
+    });
   },
   getAPIKey: (provider) => {
     return ipcRenderer.invoke('get-api-key', provider);
